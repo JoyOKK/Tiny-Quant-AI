@@ -48,6 +48,10 @@ class DataSource(ABC):
             dict，至少包含 {"symbol", "price", "time"}，尽量含 open/high/low/pre_close/volume。
         """
 
+    def get_name(self, symbol: str) -> str:
+        """股票简称。默认不发网络请求，避免拖慢回测。"""
+        return symbol
+
     # --------- 通用工具 ---------
     @staticmethod
     def _normalize(df: pd.DataFrame) -> pd.DataFrame:

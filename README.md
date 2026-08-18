@@ -56,9 +56,18 @@ python main.py indicators 000001 --start 2024-01-01
 # 3. 回测（A股双均线）
 python main.py backtest 000001 --strategy ma_cross --start 2023-01-01
 
-# 3b. 回测（美股随机森林），可多只、可绘图、可传参
-python main.py backtest AAPL --source yfinance --strategy ml_rf --start 2022-01-01 --plot
+# 3b. 回测（美股 LightGBM），可多只、可绘图、可传参
+python main.py backtest AAPL --source yfinance --strategy ml_lgbm --start 2020-01-01 --plot
 python main.py backtest 000001,600519 --strategy ma_cross --param fast=10 slow=30
+
+# 3c. 进阶单标的策略：唐奇安突破 / 波动率目标 / 深V反转 / 深V分批加仓
+python main.py backtest 000001 --strategy donchian --param entry=20 exit=10
+python main.py backtest 000001 --strategy vol_target --param target_vol=0.2
+python main.py backtest 000001 --strategy deep_v --param lookback=5 min_drop=0.05
+python main.py backtest 000001 --strategy deep_v_scale --param lots_per_add=2 add_step=0.02
+
+# 3d. 横截面动量（多标的组合回测）
+python main.py xsection --symbols 000001,600519,000858,601318 --top_k 2
 
 # 4. 模拟盘：初始化 -> 每日运行 -> 查看收益
 python main.py paper init --strategy ma_cross --symbols 000001,600519
@@ -95,7 +104,32 @@ python main.py dashboard          # 浏览器打开 http://localhost:8501
 | 名称 | 类型 | 逻辑 | 默认参数 |
 | --- | --- | --- | --- |
 | `ma_cross` | 技术指标 | 短均线上穿长均线做多，下穿平仓 | `fast=5, slow=20` |
-| `ml_rf` | 机器学习 | 随机森林用技术指标预测次日涨跌，概率超阈值做多 | `train_ratio=0.6, buy_threshold=0.55, n_estimators=200, max_depth=5` |
+| `donchian` | 趋势跟踪 | 破 N 日新高做多、破 M 日新低平仓（海龟简化版） | `entry=20, exit=10` |
+| `boll_mr` | 均值回归 | 跌破布林下轨买入、回中轨卖出，超跌止损 | `window=20, num_std=2.0, stop_std=3.5` |
+| `dual_mom` | 趋势择时 | 绝对动量为正且站上长期均线才做多 | `lookback=120, trend_ma=200` |
+| `vol_target` | 仓位管理 | 趋势定方向 + 波动率目标动态调仓 + ATR 吊灯止损（连续仓位 [0,1]） | `trend_ma=100, target_vol=0.15, atr_mult=3.0` |
+| `ml_rf` | 机器学习 | 随机森林预测次日涨跌，概率超阈值做多 | `train_ratio=0.6, buy_threshold=0.55, n_estimators=200, max_depth=5` |
+| `ml_lgbm` | 机器学习 | LightGBM + Walk-Forward 滚动训练 + 三重障碍标签（缺 LightGBM 自动回退 sklearn 梯度提升） | `horizon=10, pt=2.0, sl=2.0, retrain=20, buy_threshold=0.55` |
+| `deep_v` | K线形态 | 一周内加速砸坑后在坑底抄底（锤子/拉回，兜底大阴线→十字星），反弹缩量滞涨后卖出 | `lookback=5, min_drop=0.05, stop_loss=0.07, max_hold=10` |
+| `deep_v_scale` | K线形态 | 深V试探两手，一周内收盘破前低且再跌 `add_step` 则加两手；卖出规则同 `deep_v` | `lots_per_add=2, add_window=5, add_step=0.02, max_layers=5` |
+
+> `vol_target` 输出的是 0~1 的**连续仓位**（做多不加杠杆），回测引擎无需改动即可结算。
+
+### 🧺 横截面动量（多标的组合回测）
+
+单标的策略之外，另提供组合级的**横截面动量**：在一篮子股票里定期挑动量最强的几只等权持有，与「等权买入持有」基准对比。
+
+```bash
+python main.py xsection --symbols 000001,600519,000858,601318 \
+  --lookback 120 --skip 20 --top_k 2 --rebalance 20 --start 2021-01-01
+```
+
+| 参数 | 含义 | 默认 |
+| --- | --- | --- |
+| `--lookback` | 动量回看窗口（交易日） | 120 |
+| `--skip` | 跳过最近 N 日以规避短期反转（12-1 动量） | 20 |
+| `--top_k` | 每期持有动量最强的前 K 只 | 2 |
+| `--rebalance` | 调仓周期（交易日） | 20 |
 
 ## 📈 技术指标
 

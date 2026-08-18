@@ -48,6 +48,22 @@ class AkshareSource(DataSource):
         # adjust: "qfq"前复权 / "hfq"后复权 / ""不复权
         self.adjust = adjust
 
+    def get_name(self, symbol: str) -> str:
+        """只查单只新浪行情里的简称，避免拉全市场代码表把回测卡住。"""
+        try:
+            import requests
+
+            sym = _sina_symbol(symbol)
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}
+            r = requests.get(_SINA_HQ + sym, headers=headers, timeout=2)
+            raw = r.text.split('"')[1] if '"' in r.text else ""
+            name = raw.split(",")[0].strip() if raw else ""
+            if name:
+                return name
+        except Exception:
+            pass
+        return symbol
+
     # ---------------- 历史行情 ----------------
     def get_history(self, symbol, start, end=None, freq="daily") -> pd.DataFrame:
         end = end or dt.date.today().strftime("%Y-%m-%d")

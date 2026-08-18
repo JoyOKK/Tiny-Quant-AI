@@ -57,6 +57,10 @@ class YFinanceSource(DataSource):
             "time": dt.datetime.now().isoformat(timespec="seconds"),
         }
 
+    def get_name(self, symbol: str) -> str:
+        # Ticker.info 经常要几十秒，看板回测不能被它堵住；美股代码本身即可辨认。
+        return symbol
+
 
 def _to_float(v):
     try:

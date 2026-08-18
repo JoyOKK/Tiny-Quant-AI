@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -30,6 +31,19 @@ UP, DOWN = "#ef4444", "#22c55e"  # A股习惯：红涨绿跌
 @st.cache_data(show_spinner=False, ttl=1800)
 def cached_history(symbol: str, start: str, end: str, source: str) -> pd.DataFrame:
     return load_history(symbol, start=start, end=end or None, source=source)
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def cached_stock_name(symbol: str, source: str) -> str:
+    """查简称，最多等 2 秒；超时或失败则显示代码，不阻塞回测。"""
+    def _fetch():
+        return get_data_source(source).get_name(symbol) or symbol
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_fetch).result(timeout=2)
+    except Exception:
+        return symbol
 
 
 def compute_signals(df: pd.DataFrame, strategy: str, params: dict) -> pd.Series:
@@ -159,7 +173,10 @@ with tab_bt:
     if st.button("运行回测", type="primary"):
         rows = []
         primary_ctx = None
-        for sym in symbols:
+        n = len(symbols) or 1
+        progress = st.progress(0.0, text="准备回测…")
+        for i, sym in enumerate(symbols):
+            progress.progress(i / n, text=f"正在回测 {sym}（{i + 1}/{len(symbols)}）：拉取行情…")
             try:
                 df = cached_history(sym, str(start), str(end), source)
             except Exception as e:  # noqa: BLE001
@@ -168,10 +185,13 @@ with tab_bt:
             if df.empty:
                 st.warning(f"{sym} 无数据")
                 continue
+            progress.progress((i + 0.5) / n, text=f"正在回测 {sym}：计算信号与绩效…")
             signals = compute_signals(df, strategy, params)
             res = backtest(df, signals, init_cash=init_cash)
             m = res.metrics
+            name = cached_stock_name(sym, source)
             rows.append({
+                "名称": name,
                 "股票": sym,
                 "总收益": f"{m['total_return']*100:.2f}%",
                 "年化": f"{m['annual_return']*100:.2f}%",
@@ -182,15 +202,24 @@ with tab_bt:
                 "基准总收益": f"{res.metrics_benchmark['total_return']*100:.2f}%",
             })
             if primary_ctx is None:
-                primary_ctx = (sym, df, signals, res)
+                primary_ctx = (sym, name, df, signals, res)
+        progress.progress(1.0, text="回测完成")
         if rows:
             st.session_state["bt"] = {"rows": rows, "primary": primary_ctx}
+        else:
+            st.warning("没有成功回测的标的，请检查代码或网络后重试。")
 
     if "bt" in st.session_state:
         data = st.session_state["bt"]
         st.dataframe(pd.DataFrame(data["rows"]), use_container_width=True, hide_index=True)
         if data["primary"]:
-            sym, df, signals, res = data["primary"]
+            primary = data["primary"]
+            # 兼容旧 session：以前是 (sym, df, signals, res)
+            if len(primary) == 5:
+                sym, name, df, signals, res = primary
+            else:
+                sym, df, signals, res = primary
+                name = cached_stock_name(sym, source)
             m = res.metrics
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("总收益", f"{m['total_return']*100:.2f}%",
@@ -198,11 +227,12 @@ with tab_bt:
             k2.metric("年化收益", f"{m['annual_return']*100:.2f}%")
             k3.metric("夏普比率", f"{m['sharpe']:.2f}")
             k4.metric("最大回撤", f"{m['max_drawdown']*100:.2f}%")
-            st.caption(f"下图为主标的 {sym}（列表第一只）")
-            st.plotly_chart(fig_kline(df, signals, f"{sym} K线 + 买卖点"), use_container_width=True)
+            label = f"{name}（{sym}）" if name and name != sym else sym
+            st.caption(f"主标的 {label}（列表第一只）：资金/回撤在上，K 线在下")
             cc1, cc2 = st.columns([3, 2])
             cc1.plotly_chart(fig_equity(res), use_container_width=True)
             cc2.plotly_chart(fig_drawdown(res), use_container_width=True)
+            st.plotly_chart(fig_kline(df, signals, f"{label} K线 + 买卖点"), use_container_width=True)
     else:
         st.info("设置好左侧参数后点击「运行回测」。")
 

@@ -20,7 +20,7 @@ from config import DEFAULT_SOURCE, INIT_CASH
 from tinyquant.data.factory import get_data_source, load_history
 from tinyquant.indicators import add_indicators
 from tinyquant.strategies import get_strategy, strategy_info
-from tinyquant.backtest import backtest
+from tinyquant.backtest import backtest, cross_sectional_momentum
 from tinyquant.trading import PaperBroker
 
 
@@ -110,6 +110,35 @@ def _plot(symbol, res):
         print(f"  绘图失败: {e}")
 
 
+def cmd_xsection(args):
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    if len(symbols) < 2:
+        print("横截面动量至少需要 2 只标的，请用逗号分隔多只，如 --symbols 000001,600519,000858")
+        return
+    prices = {}
+    for sym in symbols:
+        try:
+            df = load_history(sym, start=args.start, end=args.end, source=args.source)
+        except Exception as e:  # noqa: BLE001
+            print(f"{sym}: 获取行情失败（{type(e).__name__}: {e}），跳过")
+            continue
+        if not df.empty:
+            prices[sym] = df
+    if len(prices) < 2:
+        print("有效标的不足 2 只，无法进行截面回测")
+        return
+    res = cross_sectional_momentum(
+        prices,
+        lookback=args.lookback, skip=args.skip, top_k=args.top_k,
+        rebalance=args.rebalance, init_cash=args.cash,
+    )
+    print(f"\n===== 横截面动量 | 池={list(prices)} | "
+          f"lookback={args.lookback} skip={args.skip} top_k={args.top_k} "
+          f"rebalance={args.rebalance} =====")
+    print(res.summary())
+    return res
+
+
 def cmd_dashboard(args):
     import subprocess
     import sys
@@ -179,6 +208,18 @@ def build_parser():
     sp.add_argument("--param", nargs="*", help="策略参数，如 fast=5 slow=20")
     sp.add_argument("--plot", action="store_true")
     sp.set_defaults(func=cmd_backtest)
+
+    sp = sub.add_parser("xsection", help="横截面动量组合回测（多标的）")
+    sp.add_argument("--symbols", required=True, help="逗号分隔的股票池(至少2只)")
+    sp.add_argument("--start", default="2021-01-01")
+    sp.add_argument("--end", default=None)
+    sp.add_argument("--source", default=DEFAULT_SOURCE)
+    sp.add_argument("--lookback", type=int, default=120, help="动量回看窗口")
+    sp.add_argument("--skip", type=int, default=20, help="跳过最近 N 日(规避反转)")
+    sp.add_argument("--top_k", type=int, default=2, help="持有最强的前 K 只")
+    sp.add_argument("--rebalance", type=int, default=20, help="调仓周期(交易日)")
+    sp.add_argument("--cash", type=float, default=INIT_CASH)
+    sp.set_defaults(func=cmd_xsection)
 
     sp = sub.add_parser("dashboard", help="启动交互式网页看板")
     sp.add_argument("--port", type=int, default=8501)

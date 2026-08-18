@@ -87,12 +87,17 @@ class PaperBroker:
             except Exception:
                 prices[sym] = float(df["close"].iloc[-1])
 
-        # 2) 计算目标权重（等权分配到信号为 1 的标的）
+        # 2) 目标权重 = 策略信号（0~1 仓位）。多标的权重之和超过 1 时按比例缩小。
         total_equity = acc["cash"] + sum(
             p["shares"] * prices.get(s, p["cost"]) for s, p in acc["positions"].items()
         )
-        targets = [s for s in acc["symbols"] if signals.get(s, 0) >= 0.5 and s in prices]
-        target_value = total_equity / len(targets) if targets else 0.0
+        weights = {
+            s: max(float(signals.get(s, 0)), 0.0)
+            for s in acc["symbols"] if s in prices
+        }
+        wsum = sum(weights.values())
+        if wsum > 1.0:
+            weights = {s: w / wsum for s, w in weights.items()}
 
         # 3) 生成目标持仓并撮合
         logs = []
@@ -101,9 +106,8 @@ class PaperBroker:
             if price is None or price <= 0:
                 continue
             cur_shares = acc["positions"].get(sym, {}).get("shares", 0)
-            tgt_shares = 0
-            if sym in targets:
-                tgt_shares = int(math.floor(target_value / price / lot) * lot)
+            w = weights.get(sym, 0.0)
+            tgt_shares = int(math.floor(total_equity * w / price / lot) * lot) if w > 0 else 0
             diff = tgt_shares - cur_shares
             if diff == 0:
                 continue
