@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+data_cache/
+equity_*.png
+.venv/
+.idea/
+.vscode/
