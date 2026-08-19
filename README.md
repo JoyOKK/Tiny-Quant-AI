@@ -2,13 +2,6 @@
 
 > 一个**最小可用、组件可插拔**的 AI 量化交易平台，覆盖「数据 → 指标 → 策略 → 回测 → 模拟盘 → 可视化」完整闭环。支持 A 股（akshare）与美股（yfinance），策略以插件形式随时接入。
 
-## ⚠️ 说明与免责
-
-- 回测采用「收盘产生信号、次日按收盘成交」的简化模型，含手续费但不含滑点 / 涨跌停 / 停牌等细节，结果仅供策略**相对比较**。
-- ML 策略为示例，虽用训练 / 预测时间切分避免未来函数，但特征与调参都很基础。
-- 本项目仅用于学习与研究，**不构成任何投资建议**，据此交易风险自负。
-
-
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-blue.svg">
   <img alt="Streamlit" src="https://img.shields.io/badge/UI-Streamlit-ff4b4b.svg">
@@ -72,6 +65,7 @@ python main.py backtest 000001 --strategy donchian --param entry=20 exit=10
 python main.py backtest 000001 --strategy vol_target --param target_vol=0.2
 python main.py backtest 000001 --strategy deep_v --param lookback=5 min_drop=0.05
 python main.py backtest 000001 --strategy deep_v_scale --param lots_per_add=2 add_step=0.02
+python main.py backtest 000001 --strategy ma_reversal --param ma_window=10 min_trend=0.02
 
 # 3d. 横截面动量（多标的组合回测）
 python main.py xsection --symbols 000001,600519,000858,601318 --top_k 2
@@ -119,6 +113,7 @@ python main.py dashboard          # 浏览器打开 http://localhost:8501
 | `ml_lgbm` | 机器学习 | LightGBM + Walk-Forward 滚动训练 + 三重障碍标签（缺 LightGBM 自动回退 sklearn 梯度提升） | `horizon=10, pt=2.0, sl=2.0, retrain=20, buy_threshold=0.55` |
 | `deep_v` | K线形态 | 一周内加速砸坑后在坑底抄底（锤子/拉回，兜底大阴线→十字星），反弹缩量滞涨后卖出 | `lookback=5, min_drop=0.05, stop_loss=0.07, max_hold=10` |
 | `deep_v_scale` | K线形态 | 深V试探两手，一周内收盘破前低且再跌 `add_step` 则加两手；卖出规则同 `deep_v` | `lots_per_add=2, add_window=5, add_step=0.02, max_layers=5` |
+| `ma_reversal` | 趋势拐点 | 看均线斜率：由明确下行转升买入、由明确上行转降卖出（含斜率死区+前期趋势过滤+确认延迟） | `ma_window=10, slope_span=3, trend_len=5, min_trend=0.02` |
 
 > `vol_target` 输出的是 0~1 的**连续仓位**（做多不加杠杆），回测引擎无需改动即可结算。
 
@@ -204,4 +199,8 @@ class MyStrategy(Strategy):
 
 保存即可 —— `python main.py strategies` 会**自动发现**它，回测 / 模拟盘 / 看板均可直接使用 `--strategy my_strategy`，看板参数区也会自动生成对应输入框，无需改动任何其它代码。
 
+## ⚠️ 说明与免责
 
+- 回测采用「收盘产生信号、次日按收盘成交」的简化模型，含手续费但不含滑点 / 涨跌停 / 停牌等细节，结果仅供策略**相对比较**。
+- ML 策略为示例，虽用训练 / 预测时间切分避免未来函数，但特征与调参都很基础。
+- 本项目仅用于学习与研究，**不构成任何投资建议**，据此交易风险自负。

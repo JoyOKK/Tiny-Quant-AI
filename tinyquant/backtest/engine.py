@@ -74,7 +74,8 @@ def backtest(
     bench_ret = asset_ret
     benchmark = (1 + bench_ret).cumprod() * init_cash
 
-    metrics = performance_metrics(equity, strat_ret, position)
+    metrics = performance_metrics(equity, strat_ret, position,
+                                  bench_returns=bench_ret, commission=commission)
     metrics_bench = performance_metrics(benchmark, bench_ret, pd.Series(1.0, index=df.index))
 
     return BacktestResult(
