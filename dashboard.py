@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 from config import DEFAULT_SOURCE, INIT_CASH
 from tinyquant.backtest import backtest
 from tinyquant.data.factory import get_data_source, load_history
+from tinyquant.data import watchlist as wl
 from tinyquant.indicators import add_indicators
 from tinyquant.strategies import get_strategy, strategy_info
 from tinyquant.trading import PaperBroker
@@ -64,8 +65,98 @@ def signal_points(df: pd.DataFrame, signals: pd.Series):
     )
 
 
-def drawdown(equity: pd.Series) -> pd.Series:
-    return equity / equity.cummax() - 1
+@st.cache_data(show_spinner=False, ttl=300)
+def cached_search(query: str, source: str) -> list[dict]:
+    return wl.search(query, source, limit=6)
+
+
+def _apply_pending_selection(source: str) -> None:
+    """在「本次使用」控件创建之前，把待加入/删除的勾选写进 session_state。"""
+    sel_key = f"pool_sel_{source}"
+    add_sym = st.session_state.pop(f"_pending_add_{source}", None)
+    del_sym = st.session_state.pop(f"_pending_del_{source}", None)
+    if not add_sym and not del_sym:
+        return
+    cur = st.session_state.get(sel_key)
+    if not isinstance(cur, list):
+        cur = list(wl.selected(source))
+    if add_sym and add_sym not in cur:
+        cur = cur + [add_sym]
+    if del_sym:
+        cur = [s for s in cur if s != del_sym]
+    st.session_state[sel_key] = cur
+
+
+def render_symbol_picker(source: str) -> list[str]:
+    """搜索加入股票池，勾选本次要用的标的；池子会写到本地文件。"""
+    _apply_pending_selection(source)
+
+    st.sidebar.markdown("**股票池**")
+    query = st.sidebar.text_input(
+        "搜索添加",
+        placeholder="名称 / 代码 / 拼音，如 茅台 或 000001",
+        key=f"search_{source}",
+        label_visibility="collapsed",
+    )
+    st.sidebar.caption("搜索名称、代码或拼音，点结果即可加入")
+    if query.strip():
+        hits = cached_search(query.strip(), source)
+        if not hits:
+            st.sidebar.caption("没有匹配，可在下方「管理股票池」里手动加代码")
+        already = {x["symbol"] for x in wl.pool(source)}
+        for hit in hits:
+            label = f"{hit['name']} · {hit['symbol']}"
+            if hit["symbol"] in already:
+                st.sidebar.caption(f"已在池中 · {label}")
+                continue
+            if st.sidebar.button(f"＋ {label}", key=f"add_{source}_{hit['symbol']}"):
+                wl.add(source, hit["symbol"], hit["name"])
+                st.session_state[f"_pending_add_{source}"] = hit["symbol"]
+                st.rerun()
+
+    items = wl.pool(source)
+    options = [x["symbol"] for x in items]
+    labels = {
+        x["symbol"]: (f"{x.get('name') or x['symbol']} · {x['symbol']}"
+                      if (x.get("name") and x["name"] != x["symbol"]) else x["symbol"])
+        for x in items
+    }
+    saved = [s for s in wl.selected(source) if s in options]
+    default = saved or options
+    sel_key = f"pool_sel_{source}"
+    ms_kwargs = dict(
+        options=options,
+        format_func=lambda s: labels.get(s, s),
+        key=sel_key,
+        help="勾选后，回测 / 指标 / 模拟盘 / 行情都用这些标的。股票池会保存在本地。",
+    )
+    if sel_key not in st.session_state:
+        ms_kwargs["default"] = default
+    chosen = st.sidebar.multiselect("本次使用", **ms_kwargs)
+    if chosen != saved:
+        wl.set_selected(source, chosen)
+    if not items:
+        st.sidebar.info("股票池是空的，先搜索添加一只。")
+    elif not chosen:
+        st.sidebar.warning("请至少勾选一只，再运行回测。")
+
+    with st.sidebar.expander("管理股票池"):
+        for x in items:
+            c1, c2 = st.columns([4, 1])
+            c1.caption(labels.get(x["symbol"], x["symbol"]))
+            if c2.button("删", key=f"del_{source}_{x['symbol']}"):
+                wl.remove(source, x["symbol"])
+                st.session_state[f"_pending_del_{source}"] = x["symbol"]
+                st.rerun()
+        manual = st.text_input("手动加代码", placeholder="600519 或 AAPL", key=f"manual_{source}")
+        if st.button("加入股票池", key=f"manual_add_{source}") and manual.strip():
+            item = wl.add(source, manual.strip())
+            name = cached_stock_name(item["symbol"], source)
+            if name and name != item["symbol"]:
+                wl.add(source, item["symbol"], name)
+            st.session_state[f"_pending_add_{source}"] = item["symbol"]
+            st.rerun()
+    return chosen
 
 
 # ----------------------- 图表 -----------------------
@@ -123,6 +214,10 @@ def fig_equity(res) -> go.Figure:
     return fig
 
 
+def drawdown(equity: pd.Series) -> pd.Series:
+    return equity / equity.cummax() - 1
+
+
 def fig_drawdown(res) -> go.Figure:
     dd = drawdown(res.equity) * 100
     fig = go.Figure()
@@ -140,9 +235,7 @@ infos = {i["name"]: i for i in strategy_info()}
 source = st.sidebar.selectbox("数据源", ["akshare", "yfinance"],
                               index=0 if DEFAULT_SOURCE == "akshare" else 1,
                               help="akshare=A股，yfinance=美股")
-symbols_raw = st.sidebar.text_input("股票代码（逗号分隔）",
-                                    value="000001,600519" if source == "akshare" else "AAPL,MSFT")
-symbols = [s.strip() for s in symbols_raw.split(",") if s.strip()]
+symbols = render_symbol_picker(source)
 
 strategy = st.sidebar.selectbox("策略", list(infos), format_func=lambda n: f"{n} · {infos[n]['description'][:14]}")
 
@@ -170,7 +263,9 @@ tab_bt, tab_ind, tab_paper, tab_quote = st.tabs(["🔬 回测", "📊 技术指�
 # ===== 回测 =====
 with tab_bt:
     st.subheader(f"回测 · 策略 {strategy}")
-    if st.button("运行回测", type="primary"):
+    if not symbols:
+        st.info("左侧股票池先搜索添加、再勾选至少一只，然后点「运行回测」。")
+    elif st.button("运行回测", type="primary"):
         rows = []
         primary_ctx = None
         n = len(symbols) or 1
@@ -239,7 +334,16 @@ with tab_bt:
 # ===== 技术指标 =====
 with tab_ind:
     st.subheader("技术指标")
-    sym = st.selectbox("查看标的", symbols, key="ind_sym") if symbols else None
+    if not symbols:
+        st.info("请先在左侧股票池勾选标的。")
+        sym = None
+    else:
+        sym = st.selectbox(
+            "查看标的",
+            symbols,
+            format_func=lambda s: wl.label_of(source, s),
+            key="ind_sym",
+        )
     if sym and st.button("加载指标", key="load_ind"):
         try:
             df = cached_history(sym, str(start), str(end), source)
@@ -267,9 +371,12 @@ with tab_paper:
     broker = PaperBroker()
     colA, colB, colC = st.columns(3)
     if colA.button("① 用当前策略初始化/重置账户"):
-        broker.init_account(strategy=strategy, symbols=symbols, source=source,
-                            init_cash=init_cash, strategy_params=params)
-        st.success(f"已初始化：{strategy} · {symbols} · 初始资金 {init_cash:.0f}")
+        if not symbols:
+            st.warning("请先在左侧股票池勾选至少一只。")
+        else:
+            broker.init_account(strategy=strategy, symbols=symbols, source=source,
+                                init_cash=init_cash, strategy_params=params)
+            st.success(f"已初始化：{strategy} · {symbols} · 初始资金 {init_cash:.0f}")
     if colB.button("② 运行一次调仓"):
         try:
             broker.run_once(verbose=False)
@@ -315,7 +422,9 @@ with tab_paper:
 # ===== 实时行情 =====
 with tab_quote:
     st.subheader("实时行情")
-    if st.button("获取最新报价"):
+    if not symbols:
+        st.info("请先在左侧股票池勾选标的。")
+    elif st.button("获取最新报价"):
         ds = get_data_source(source)
         cols = st.columns(min(len(symbols), 4) or 1)
         for i, sym in enumerate(symbols):

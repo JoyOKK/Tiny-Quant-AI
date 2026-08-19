@@ -14,6 +14,9 @@ DB_PATH = DATA_DIR / "market.db"
 # 模拟盘账户状态文件
 PAPER_ACCOUNT_PATH = DATA_DIR / "paper_account.json"
 
+# 看板股票池（搜索添加后持久化，按数据源分开）
+WATCHLIST_PATH = DATA_DIR / "watchlist.json"
+
 # 默认数据源: "akshare"(A股) 或 "yfinance"(美股)
 DEFAULT_SOURCE = "akshare"
 
