@@ -454,13 +454,14 @@ def fig_metric_bars(m: dict, mb: dict) -> go.Figure:
     pad = max((hi - lo) * 0.20, 3)
     fig.update_layout(
         barmode="group", bargap=0.28, bargroupgap=0.14, height=250,
+        # 标题与图例同处顶部一行，且都排在绘图区上方的边距里（底端贴图顶、向上延伸），避免压住柱子
         title=dict(text="策略 vs 基准（%）", font=dict(size=13, color="#cbd5e1"),
-                   x=0.02, xanchor="left", y=0.97, yanchor="top"),
+                   x=0.02, xanchor="left", y=1.0, yanchor="bottom", yref="paper"),
         uniformtext=dict(mode="show", minsize=12),
-        legend=dict(orientation="h", y=1.16, yanchor="bottom",
+        legend=dict(orientation="h", y=1.0, yanchor="bottom",
                     x=1.0, xanchor="right", font=dict(size=12, color="#cbd5e1"),
                     bgcolor="rgba(0,0,0,0)", itemwidth=30),
-        margin=dict(t=54, b=6, l=6, r=24),
+        margin=dict(t=34, b=6, l=6, r=24),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#e2e8f0"),
     )
@@ -502,9 +503,16 @@ def render_metric_cards(m: dict, mb: dict) -> None:
         d = m[key] - mb[key]
         return f"{d * 100:.2f}% vs基准" if kind == "pct" else f"{d:.2f} vs基准"
 
-    # 顶部图形区：左仪表盘、右对比条形图
-    g1, g2 = st.columns([3, 2])
+    # 顶部图形区：左仪表盘、右对比条形图，套一个外框并用竖线分隔两块
+    top = st.container(border=True)
+    top.markdown("###### 核心比率 & 策略对比")
+    g1, gsep, g2 = top.columns([3, 0.08, 2])
     g1.plotly_chart(fig_ratio_gauges(m), use_container_width=True)
+    gsep.markdown(
+        '<div style="border-left:1px solid rgba(148,163,184,0.35);'
+        'height:230px;margin:6px auto 0;"></div>',
+        unsafe_allow_html=True,
+    )
     g2.plotly_chart(fig_metric_bars(m, mb), use_container_width=True)
 
     box = st.container(border=True)
