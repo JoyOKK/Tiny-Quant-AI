@@ -454,11 +454,13 @@ def fig_metric_bars(m: dict, mb: dict) -> go.Figure:
     pad = max((hi - lo) * 0.20, 3)
     fig.update_layout(
         barmode="group", bargap=0.28, bargroupgap=0.14, height=250,
-        title=dict(text="策略 vs 基准（%）", font=dict(size=13, color="#cbd5e1"), x=0.02),
+        title=dict(text="策略 vs 基准（%）", font=dict(size=13, color="#cbd5e1"),
+                   x=0.02, xanchor="left", y=0.97, yanchor="top"),
         uniformtext=dict(mode="show", minsize=12),
-        legend=dict(orientation="h", y=1.18, x=0, font=dict(size=12, color="#cbd5e1"),
-                    bgcolor="rgba(0,0,0,0)"),
-        margin=dict(t=50, b=6, l=6, r=24),
+        legend=dict(orientation="h", y=1.16, yanchor="bottom",
+                    x=1.0, xanchor="right", font=dict(size=12, color="#cbd5e1"),
+                    bgcolor="rgba(0,0,0,0)", itemwidth=30),
+        margin=dict(t=54, b=6, l=6, r=24),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#e2e8f0"),
     )
