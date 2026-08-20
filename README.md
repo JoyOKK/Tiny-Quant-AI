@@ -66,6 +66,7 @@ python main.py backtest 000001 --strategy vol_target --param target_vol=0.2
 python main.py backtest 000001 --strategy deep_v --param lookback=5 min_drop=0.05
 python main.py backtest 000001 --strategy deep_v_scale --param lots_per_add=2 add_step=0.02
 python main.py backtest 000001 --strategy ma_reversal --param ma_window=10 min_trend=0.02
+python main.py backtest 000001 --strategy macd_reversal --param min_trend=0.03 cooldown=10
 
 # 3d. 横截面动量（多标的组合回测）
 python main.py xsection --symbols 000001,600519,000858,601318 --top_k 2
@@ -114,6 +115,7 @@ python main.py dashboard          # 浏览器打开 http://localhost:8501
 | `deep_v` | K线形态 | 一周内加速砸坑后在坑底抄底（锤子/拉回，兜底大阴线→十字星），反弹缩量滞涨后卖出 | `lookback=5, min_drop=0.05, stop_loss=0.07, max_hold=10` |
 | `deep_v_scale` | K线形态 | 深V试探两手，一周内收盘破前低且再跌 `add_step` 则加两手；卖出规则同 `deep_v` | `lots_per_add=2, add_window=5, add_step=0.02, max_layers=5` |
 | `ma_reversal` | 趋势拐点 | 看均线斜率：由明确下行转升买入、由明确上行转降卖出（含斜率死区+前期趋势过滤+确认延迟） | `ma_window=10, slope_span=3, trend_len=5, min_trend=0.02` |
+| `macd_reversal` | 趋势拐点 | MACD 快慢均线(EMA12/26)：慢线平滑成趋势、快线走平拐头时，谷底买/峰顶卖，含 cooldown 冷静期严控低频 | `fast=12, slow=26, slope_span=3, trend_len=8, min_trend=0.03, cooldown=10` |
 
 > `vol_target` 输出的是 0~1 的**连续仓位**（做多不加杠杆），回测引擎无需改动即可结算。
 

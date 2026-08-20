@@ -70,17 +70,32 @@ def compute_signals(df: pd.DataFrame, strategy: str, params: dict) -> pd.Series:
     return strat.run(df)
 
 
-def signal_points(df: pd.DataFrame, signals: pd.Series):
-    """返回买入 / 卖出的时间点与价格（按信号次日执行）。"""
+def signal_points(df: pd.DataFrame, signals: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """买入 / 卖出当日 OHLC（与回测一致：信号次日按收盘价成交）。"""
     pos = signals.reindex(df.index).fillna(0)
-    exec_pos = pos.shift(1).fillna(0)  # 与回测口径一致：次日成交
+    exec_pos = pos.shift(1).fillna(0)
     change = exec_pos.diff().fillna(exec_pos)
-    buy_idx = df.index[change > 0]
-    sell_idx = df.index[change < 0]
-    return (
-        (buy_idx, df.loc[buy_idx, "close"]),
-        (sell_idx, df.loc[sell_idx, "close"]),
-    )
+    cols = ["open", "high", "low", "close"]
+    return df.loc[df.index[change > 0], cols], df.loc[df.index[change < 0], cols]
+
+
+def trade_log(df: pd.DataFrame, signals: pd.Series) -> pd.DataFrame:
+    """买卖点明细表，便于对照图表核对成交日与成交价。"""
+    buys, sells = signal_points(df, signals)
+    rows = []
+    for side, pts in (("买入", buys), ("卖出", sells)):
+        for ts, r in pts.iterrows():
+            rows.append({
+                "日期": pd.Timestamp(ts).strftime("%Y-%m-%d"),
+                "方向": side,
+                "成交价": round(float(r["close"]), 2),
+                "开": round(float(r["open"]), 2),
+                "高": round(float(r["high"]), 2),
+                "低": round(float(r["low"]), 2),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["日期", "方向", "成交价", "开", "高", "低"])
+    return pd.DataFrame(rows).sort_values("日期").reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -178,9 +193,118 @@ def render_symbol_picker(source: str) -> list[str]:
 
 
 # ----------------------- 图表 -----------------------
-def fig_kline(df: pd.DataFrame, signals: pd.Series, title: str) -> go.Figure:
+def _trade_marker_offset(df: pd.DataFrame) -> float:
+    """买卖点相对影线的价差：跟单根 K 线高度挂钩，放大后仍贴着对应那根。"""
+    span = float(df["high"].max() - df["low"].min()) or 1.0
+    bar = float((df["high"] - df["low"]).median() or 0.0)
+    if bar <= 0:
+        bar = span * 0.01
+    return max(bar * 1.8, span * 0.012)
+
+
+def _add_trade_markers(
+    fig: go.Figure,
+    pts: pd.DataFrame,
+    *,
+    side: str,
+    offset: float,
+    show_labels: bool,
+    show_lines: bool,
+    marker_size: int,
+) -> None:
+    """把买卖点画在影线外侧。密集时可关掉价格标签和指引线，只留三角标。"""
+    if pts.empty:
+        return
+    is_buy = side == "buy"
+    color = UP if is_buy else DOWN
+    name = "买入" if is_buy else "卖出"
+    symbol = "triangle-up" if is_buy else "triangle-down"
+    wick = pts["low"] if is_buy else pts["high"]
+    y_mark = wick - offset if is_buy else wick + offset
+
+    if show_lines:
+        xs, ys = [], []
+        for x, yw, ym in zip(pts.index, wick, y_mark):
+            xs += [x, x, None]
+            ys += [float(yw), float(ym), None]
+        fig.add_trace(
+            go.Scatter(
+                x=xs, y=ys, mode="lines",
+                line=dict(color=color, width=1.4, dash="dot"),
+                legendgroup=name, showlegend=False, hoverinfo="skip",
+                cliponaxis=False, opacity=0.6,
+            ),
+            row=1, col=1,
+        )
+    custom = [
+        [float(o), float(h), float(l), float(c)]
+        for o, h, l, c in pts[["open", "high", "low", "close"]].to_numpy()
+    ]
+    fig.add_trace(
+        go.Scatter(
+            x=pts.index, y=y_mark, mode="markers",
+            name=name, legendgroup=name,
+            marker=dict(
+                symbol=symbol, size=marker_size, color=color,
+                line=dict(width=1.4, color="#ffffff"),
+            ),
+            customdata=custom,
+            hovertemplate=(
+                f"<b>{name}</b><br>"
+                "日期: %{x|%Y-%m-%d}<br>"
+                "成交价: %{customdata[3]:.2f}<br>"
+                "开 %{customdata[0]:.2f}  高 %{customdata[1]:.2f}<br>"
+                "低 %{customdata[2]:.2f}  收 %{customdata[3]:.2f}"
+                "<extra></extra>"
+            ),
+            cliponaxis=False,
+        ),
+        row=1, col=1,
+    )
+    if show_labels:
+        for x, y, price in zip(pts.index, y_mark, pts["close"]):
+            fig.add_annotation(
+                x=x, y=y,
+                text=f"{'买' if is_buy else '卖'} {float(price):.2f}",
+                showarrow=False,
+                yshift=-18 if is_buy else 18,
+                font=dict(size=11, color="#ffffff",
+                          family="PingFang SC, Microsoft YaHei, sans-serif"),
+                bgcolor=color,
+                bordercolor="rgba(255,255,255,0.9)",
+                borderwidth=1,
+                borderpad=3,
+                opacity=0.96,
+                row=1, col=1,
+            )
+
+
+# 买卖点数量超过该阈值时自动切精简模式（不显示价格标签/指引线）
+_DENSE_TRADE_THRESHOLD = 14
+
+
+def fig_kline(
+    df: pd.DataFrame,
+    signals: pd.Series,
+    title: str,
+    *,
+    label_mode: str = "auto",
+) -> go.Figure:
+    """K 线 + 买卖点。label_mode: auto/detailed/compact 控制是否显示价格标签与指引线。"""
     ind = add_indicators(df)
-    (bx, by), (sx, sy) = signal_points(df, signals)
+    buys, sells = signal_points(df, signals)
+    offset = _trade_marker_offset(df)
+
+    n_trades = len(buys) + len(sells)
+    if label_mode == "detailed":
+        dense = False
+    elif label_mode == "compact":
+        dense = True
+    else:  # auto
+        dense = n_trades > _DENSE_TRADE_THRESHOLD
+    show_labels = not dense
+    show_lines = not dense
+    marker_size = 11 if dense else 18
 
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
@@ -199,24 +323,31 @@ def fig_kline(df: pd.DataFrame, signals: pd.Series, title: str) -> go.Figure:
                 go.Scatter(x=ind.index, y=ind[ma], name=ma, line=dict(width=1, color=color)),
                 row=1, col=1,
             )
+    # 详细模式给标签留出高度，避免「买 xx.xx」被坐标轴裁掉
+    pad = offset * (2.6 if show_labels else 1.4)
     fig.add_trace(
-        go.Scatter(x=bx, y=by, mode="markers", name="买入",
-                   marker=dict(symbol="triangle-up", size=12, color=UP)),
+        go.Scatter(
+            x=[df.index[0], df.index[-1]],
+            y=[float(df["low"].min()) - pad, float(df["high"].max()) + pad],
+            mode="markers", marker=dict(opacity=0, size=0),
+            showlegend=False, hoverinfo="skip",
+        ),
         row=1, col=1,
     )
-    fig.add_trace(
-        go.Scatter(x=sx, y=sy, mode="markers", name="卖出",
-                   marker=dict(symbol="triangle-down", size=12, color=DOWN)),
-        row=1, col=1,
-    )
+    marker_kw = dict(offset=offset, show_labels=show_labels,
+                     show_lines=show_lines, marker_size=marker_size)
+    _add_trade_markers(fig, buys, side="buy", **marker_kw)
+    _add_trade_markers(fig, sells, side="sell", **marker_kw)
     vol_colors = [UP if c >= o else DOWN for o, c in zip(df["open"], df["close"])]
     fig.add_trace(
         go.Bar(x=df.index, y=df["volume"], name="成交量", marker_color=vol_colors),
         row=2, col=1,
     )
     fig.update_layout(
-        height=560, xaxis_rangeslider_visible=False, hovermode="x unified",
-        legend=dict(orientation="h", y=1.02, x=0), margin=dict(t=40, b=10),
+        height=620, xaxis_rangeslider_visible=False, hovermode="x unified",
+        legend=dict(orientation="h", y=1.02, x=0),
+        margin=dict(t=48, b=16, l=8, r=8),
+        hoverlabel=dict(align="left"),
     )
     return fig
 
@@ -516,7 +647,28 @@ with tab_bt:
             cc1, cc2 = st.columns([3, 2])
             cc1.plotly_chart(fig_equity(res), use_container_width=True)
             cc2.plotly_chart(fig_drawdown(res), use_container_width=True)
-            st.plotly_chart(fig_kline(df, signals, f"{label} K线 + 买卖点"), use_container_width=True)
+            log = trade_log(df, signals)
+            mode_labels = {
+                "auto": "自动（点多自动精简）",
+                "detailed": "详细（价格标签+指引线）",
+                "compact": "精简（只显示三角标）",
+            }
+            mc1, mc2 = st.columns([1, 3])
+            label_mode = mc1.radio(
+                "买卖点显示", list(mode_labels), index=0,
+                format_func=lambda k: mode_labels[k], key="kline_label_mode",
+                help="交易频繁时选「精简」或「自动」，图更清爽；具体价格看下方明细或悬停。",
+            )
+            st.plotly_chart(
+                fig_kline(df, signals, f"{label} K线 + 买卖点", label_mode=label_mode),
+                use_container_width=True,
+            )
+            if log.empty:
+                st.caption("这段区间没有成交。")
+            else:
+                st.caption("三角标在影线外侧（买在下、卖在上）；悬停看成交价，密集时用下方明细核对。")
+                with st.expander(f"买卖点明细（{len(log)} 笔）", expanded=False):
+                    st.dataframe(log, use_container_width=True, hide_index=True)
     else:
         st.info("设置好左侧参数后点击「运行回测」。")
 
