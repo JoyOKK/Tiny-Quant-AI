@@ -13,6 +13,6 @@ tabulate>=0.9
 matplotlib>=3.7        # 可选：绘制资金曲线
 
 # 交互式网页看板
-streamlit>=1.30
+streamlit>=1.35        # plotly_chart 的 key 参数需 1.35+
 plotly>=5.18
 watchdog>=4.0          # Streamlit 文件监视；缺少时启动看板会提示安装

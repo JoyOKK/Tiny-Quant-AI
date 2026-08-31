@@ -17,6 +17,9 @@ PAPER_ACCOUNT_PATH = DATA_DIR / "paper_account.json"
 # 看板股票池（搜索添加后持久化，按数据源分开）
 WATCHLIST_PATH = DATA_DIR / "watchlist.json"
 
+# 策略快照库（股票+策略+参数+绩效，持久化，便于复用与对比）
+STRATEGY_LIB_PATH = DATA_DIR / "strategy_lib.json"
+
 # 默认数据源: "akshare"(A股) 或 "yfinance"(美股)
 DEFAULT_SOURCE = "akshare"
 
