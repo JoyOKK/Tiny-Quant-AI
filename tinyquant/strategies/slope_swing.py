@@ -71,8 +71,8 @@ class SlopeSwing(Strategy):
             "sg_window": 11,     # 斜率保形滤波窗口(与看板 MA斜率(平滑·因果) 一致)
             "sg_poly": 3,        # 多项式阶数(< 窗口)
             "mode": "turn",      # turn=低滞后(掉头即确认) / zigzag=稳健(等反转)
-            "eps_k": 0.20,       # [turn]死区＝eps_k×局部std，越大越抗噪、略增滞后
-            "persist": 2,        # [turn]掉头需连续确认的根数(1=最及时但易抖,2=甜点区)
+            "eps_k": 0.0,        # [turn]死区＝eps_k×局部std；0=纯反转第一天(最及时,可能多抖)
+            "persist": 1,        # [turn]掉头需连续确认的根数；1=反转第一天即触发
             "rev": 1.0,          # [zigzag]反转确认阈值＝rev×局部std
             "vol_win": 20,       # 计算局部波动(std)的滚动窗口
             "lookahead": False,  # True=中心式+find_peaks贴合可视谷峰(用未来,仅对照)
@@ -124,18 +124,20 @@ class SlopeSwing(Strategy):
         n = len(cv)
         pos = np.zeros(n)
         holding = False
-        regime = 0            # 上一次确认的斜率方向：+1 升 / -1 降
+        last_dir = 0          # 斜率曲线上一个「已确立」的涨跌方向：+1 升 / -1 降
         run_dir = 0           # 当前连续方向
         run_len = 0           # 当前方向已持续根数
         prev = np.nan
         for i in range(n):
             v, sc = cv[i], scale[i]
-            if np.isnan(v) or np.isnan(sc) or sc <= 0 or np.isnan(prev):
+            # eps_k=0（纯反转第一天）时不依赖局部波动；eps_k>0 时需要有效 std 才能定死区
+            bad_scale = eps_k > 0 and (np.isnan(sc) or sc <= 0)
+            if np.isnan(v) or np.isnan(prev) or bad_scale:
                 if not np.isnan(v):
                     prev = v
                 pos[i] = 1.0 if holding else 0.0
                 continue
-            dead = eps_k * sc
+            dead = eps_k * sc if eps_k > 0 else 0.0
             dv = v - prev
             d = 1 if dv > dead else (-1 if dv < -dead else 0)
             if d != 0 and d == run_dir:
@@ -143,12 +145,13 @@ class SlopeSwing(Strategy):
             elif d != 0:
                 run_dir, run_len = d, 1
             # d==0（走平）保持当前方向记忆，不重置
-            # 斜率由降转升并持续 persist 根 → 谷底确认 → 买
-            if run_dir > 0 and run_len >= persist and regime <= 0:
-                holding, regime = True, 1
-            # 斜率由升转降并持续 persist 根 → 峰顶确认 → 卖
-            elif run_dir < 0 and run_len >= persist and regime >= 0:
-                holding, regime = False, -1
+            # 方向连续 persist 根即「确立」；相对上一确立方向发生反转时买/卖
+            if run_dir != 0 and run_len >= persist and run_dir != last_dir:
+                if run_dir > 0 and last_dir < 0:      # 曲线由降转升第一天 → 谷底 → 买
+                    holding = True
+                elif run_dir < 0 and last_dir > 0:    # 曲线由升转降第一天 → 峰顶 → 卖
+                    holding = False
+                last_dir = run_dir
             prev = v
             pos[i] = 1.0 if holding else 0.0
         return pos
