@@ -88,6 +88,20 @@ def signal_points(df: pd.DataFrame, signals: pd.Series) -> tuple[pd.DataFrame, p
     return df.loc[df.index[change > 0], cols], df.loc[df.index[change < 0], cols]
 
 
+def _x_rangebreaks(index: pd.DatetimeIndex | pd.Index) -> list[dict]:
+    """隐藏非交易日空隙（双休 + 节假日），使 K 线与指标曲线紧凑排列。"""
+    idx = pd.DatetimeIndex(index).normalize().unique().sort_values()
+    if len(idx) < 2:
+        return [dict(bounds=["sat", "mon"])]
+    # 日历日全集减去实际交易日 = 空隙；周末交给 bounds，values 只补工作日节假日
+    missing = pd.date_range(idx.min(), idx.max(), freq="D").difference(idx)
+    holidays = missing[missing.weekday < 5]  # 周一=0 … 周五=4
+    breaks: list[dict] = [dict(bounds=["sat", "mon"])]
+    if len(holidays):
+        breaks.append(dict(values=[d.strftime("%Y-%m-%d") for d in holidays]))
+    return breaks
+
+
 _TRADE_COLS = ["交易", "日期", "方向", "成交价", "收益", "开", "高", "低"]
 
 
@@ -706,9 +720,11 @@ def fig_kline(
         margin=dict(t=80, b=16, l=8, r=8),
         hoverlabel=dict(align="left"),
     )
-    # 竖直参考线贯穿各子图，替代 x unified 的定位指引
+    # 竖直参考线贯穿各子图，替代 x unified 的定位指引；
+    # rangebreaks 挖掉双休/节假日空隙，让 K 线与曲线紧凑连在一起
     fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor",
-                     spikethickness=1, spikecolor="#94a3b8", spikedash="dot")
+                     spikethickness=1, spikecolor="#94a3b8", spikedash="dot",
+                     rangebreaks=_x_rangebreaks(df.index))
     # 主标题固定在图表顶部上方 46px（图例之上）；其余子图标题略微下移留白
     for ann in fig.layout.annotations:
         if ann.text == title:
