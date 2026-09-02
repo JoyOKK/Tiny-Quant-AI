@@ -346,23 +346,32 @@ _OVERLAY_INDICATORS: dict[str, tuple[str, str]] = {
     "boll_upper": ("BOLL 上轨", "#9ca3af"),
     "boll_mid": ("BOLL 中轨", "#6b7280"),
     "boll_lower": ("BOLL 下轨", "#9ca3af"),
-    # k 日均线曲线的一阶导(斜率)/二阶导(加速度)：数值量纲与价格差别大，
+    # k 日均线曲线的一阶导(斜率)/二阶导(加速度)/三阶导(急动度)：数值量纲与价格差别大，
     # 画在主图右侧第二坐标轴上，围绕 0 波动，过 0 处即波峰/波谷
     "ma_slope": ("MA斜率(一阶导)", "#0ea5e9"),
     "ma_accel": ("MA加速度(二阶导)", "#f43f5e"),
-    # 斜率/加速度的保形(Savitzky-Golay)滤波平滑版，去抖后更干净，便于识别真正的拐点
+    "ma_jerk": ("MA三阶导", "#a855f7"),
+    # 斜率/加速度/三阶导的保形(Savitzky-Golay)滤波平滑版，去抖后更干净，便于识别真正的拐点
     # 注意：中心式(_smooth_series savgol)用到未来数据，仅供展示，勿据可视谷/峰做实盘判断
     "ma_slope_smooth": ("MA斜率(平滑)", "#22c55e"),
     "ma_accel_smooth": ("MA加速度(平滑)", "#eab308"),
+    "ma_jerk_smooth": ("MA三阶导(平滑)", "#c084fc"),
     # 因果(trailing)版：每点只用「截至当日」的历史，实盘真正能看到的平滑曲线
     # 与 slope_swing 策略内部所用曲线一致；较中心式略滞后、末端不会回改(no repaint)
     "ma_slope_smooth_causal": ("MA斜率(平滑·因果)", "#0d9488"),
     "ma_accel_smooth_causal": ("MA加速度(平滑·因果)", "#d97706"),
+    "ma_jerk_smooth_causal": ("MA三阶导(平滑·因果)", "#7c3aed"),
+    # 固定 10 日均线斜率的因果平滑版（不随「导数 k日均线」控件变化）
+    "ma10_slope_smooth_causal": ("MA10斜率(平滑·因果)", "#059669"),
 }
 
 # 需在主图右轴、且要按 k 日均线现算的导数类指标
-_DERIV_KEYS = {"ma_slope", "ma_accel", "ma_slope_smooth", "ma_accel_smooth",
-               "ma_slope_smooth_causal", "ma_accel_smooth_causal"}
+_DERIV_KEYS = {
+    "ma_slope", "ma_accel", "ma_jerk",
+    "ma_slope_smooth", "ma_accel_smooth", "ma_jerk_smooth",
+    "ma_slope_smooth_causal", "ma_accel_smooth_causal", "ma_jerk_smooth_causal",
+    "ma10_slope_smooth_causal",
+}
 
 # 副图指标：量纲与价格不同，各自单独成一个子图 → 显示名
 _PANEL_INDICATORS: dict[str, str] = {
@@ -563,16 +572,18 @@ def fig_kline(
     deriv_ma_window: int = 5,
     slope_smooth_window: int = 11,
     accel_smooth_window: int = 11,
+    jerk_smooth_window: int = 11,
 ) -> go.Figure:
     """K 线 + 买卖点。
 
     label_mode: auto/detailed/compact 控制是否显示价格标签与指引线。
-    overlays:   主图叠加指标 key 列表（均线/布林/斜率/加速度等），None 时用默认组合。
+    overlays:   主图叠加指标 key 列表（均线/布林/斜率/加速度/三阶导等），None 时用默认组合。
     panels:     副图指标 key 列表（MACD/RSI/KDJ 等），各自单独成图。
     smooth:     (滤波方式, 强度)，对各指标曲线平滑降噪；K 线与成交量不受影响。
-    deriv_ma_window:    计算「斜率/加速度」所用的 k 日均线周期（默认 5）。
+    deriv_ma_window:    计算「斜率/加速度/三阶导」所用的 k 日均线周期（默认 5）。
     slope_smooth_window: 「MA斜率(平滑)」的保形滤波窗口（默认 11，值小更贴合真实斜率）。
     accel_smooth_window: 「MA加速度(平滑)」的保形滤波窗口（默认 11，与斜率同方案）。
+    jerk_smooth_window:  「MA三阶导(平滑)」的保形滤波窗口（默认 11，与加速度同方案）。
     """
     sm_m, sm_s = smooth if smooth else ("none", 0)
     ind = add_indicators(df)
@@ -581,7 +592,7 @@ def fig_kline(
                 if k in _OVERLAY_INDICATORS and (k in ind or k in _DERIV_KEYS)]
     panels = [k for k in (panels or []) if k in _PANEL_INDICATORS]
 
-    # 主图叠加拆两类：常规列指标（价格量纲，左轴）与导数指标（斜率/加速度，右轴）
+    # 主图叠加拆两类：常规列指标（价格量纲，左轴）与导数指标（斜率/加速度/三阶导，右轴）
     col_overlays = [k for k in overlays if k not in _DERIV_KEYS]
     deriv_overlays = [k for k in overlays if k in _DERIV_KEYS]
     # 直接算好各导数曲线的最终显示序列（右轴）
@@ -591,19 +602,29 @@ def fig_kline(
         dma = df["close"].rolling(w, min_periods=1).mean()
         slope = dma.diff()                       # 一阶导：均线曲线斜率（原始）
         accel = slope.diff()                     # 二阶导：斜率的变化＝加速度（原始）
-        # 原始斜率/加速度保持未平滑（真·原始，始终保留）；
-        # 平滑版是对同一条原始曲线做保形(SavGol)滤波，斜率/加速度各用自己的窗口
+        jerk = accel.diff()                      # 三阶导：加速度的变化＝急动度（原始）
+        # 原始斜率/加速度/三阶导保持未平滑（真·原始，始终保留）；
+        # 平滑版是对同一条原始曲线做保形(SavGol)滤波，各阶各用自己的窗口
         deriv_display["ma_slope"] = slope
         deriv_display["ma_accel"] = accel
+        deriv_display["ma_jerk"] = jerk
         deriv_display["ma_slope_smooth"] = _smooth_series(
             slope, "savgol", int(slope_smooth_window))
         deriv_display["ma_accel_smooth"] = _smooth_series(
             accel, "savgol", int(accel_smooth_window))
+        deriv_display["ma_jerk_smooth"] = _smooth_series(
+            jerk, "savgol", int(jerk_smooth_window))
         # 因果版：只用截至当日的历史，实盘可见、末端不回改；与 slope_swing 策略一致
         deriv_display["ma_slope_smooth_causal"] = _causal_savgol_series(
             slope, int(slope_smooth_window))
         deriv_display["ma_accel_smooth_causal"] = _causal_savgol_series(
             accel, int(accel_smooth_window))
+        deriv_display["ma_jerk_smooth_causal"] = _causal_savgol_series(
+            jerk, int(jerk_smooth_window))
+        # 固定 MA10 斜率因果平滑（独立于上方 k 日均线参数）
+        ma10 = ind["ma10"] if "ma10" in ind.columns else df["close"].rolling(10, min_periods=1).mean()
+        deriv_display["ma10_slope_smooth_causal"] = _causal_savgol_series(
+            ma10.diff(), int(slope_smooth_window))
 
     buys, sells = signal_points(df, signals)
     offset = _trade_marker_offset(df)
@@ -619,29 +640,30 @@ def fig_kline(
     show_lines = not dense
     marker_size = 11 if dense else 18
 
-    # 布局：价格面板 + 成交量 + 每个副图指标各占一行
+    # 布局：K 线与成交量同一坐标系（成交量叠在主图底部），额外副图指标再往下排。
+    # 说明：Plotly 的 spike 竖线无法跨子图域；把成交量画进主图后，十字虚线才能盖住量柱。
     n_panels = len(panels)
-    n_rows = 2 + n_panels
+    n_rows = 1 + n_panels
     if n_panels:
-        price_h, vol_h = 0.58, 0.16
-        panel_h = (1 - price_h - vol_h) / n_panels
-        row_heights = [price_h, vol_h] + [panel_h] * n_panels
+        price_h = 0.72
+        panel_h = (1 - price_h) / n_panels
+        row_heights = [price_h] + [panel_h] * n_panels
     else:
-        row_heights = [0.72, 0.28]
-    subplot_titles = [title, "成交量"] + [_PANEL_INDICATORS[k] for k in panels]
+        row_heights = [1.0]
+    subplot_titles = [title] + [_PANEL_INDICATORS[k] for k in panels]
 
     # 只有选了导数指标时才在主图开启右侧第二坐标轴，避免影响原有布局
     specs = [[{"secondary_y": bool(deriv_overlays)}]] + \
             [[{"secondary_y": False}] for _ in range(n_rows - 1)]
     fig = make_subplots(
         rows=n_rows, cols=1, shared_xaxes=True, row_heights=row_heights,
-        vertical_spacing=0.03, subplot_titles=subplot_titles, specs=specs,
+        vertical_spacing=0.04, subplot_titles=subplot_titles, specs=specs,
     )
     fig.add_trace(
         go.Candlestick(
             x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"],
             name="K线", increasing_line_color=UP, decreasing_line_color=DOWN,
-            hoverinfo="skip",  # 悬浮值改由底部统一提示承载，避免大色块盖住曲线
+            hoverinfo="skip",  # 悬浮值改由顶部统一提示承载，避免大色块盖住曲线
         ),
         row=1, col=1,
     )
@@ -652,12 +674,15 @@ def fig_kline(
                        name=zh, line=dict(width=1, color=color), hoverinfo="skip"),
             row=1, col=1,
         )
-    # 导数指标（斜率/加速度）画在主图右轴，围绕 0 波动；过 0 处即波峰/波谷
+    # 导数指标（斜率/加速度/三阶导）画在主图右轴，围绕 0 波动；过 0 处即波峰/波谷
+    _CAUSAL_DERIV = {"ma_slope_smooth_causal", "ma_accel_smooth_causal",
+                    "ma_jerk_smooth_causal", "ma10_slope_smooth_causal"}
+    _CENTER_SMOOTH_DERIV = {"ma_slope_smooth", "ma_accel_smooth", "ma_jerk_smooth"}
     for key in deriv_overlays:
         zh, color = _OVERLAY_INDICATORS[key]
-        # 中心式平滑用实线加粗；因果平滑用虚线(实盘可见)；原始斜率/加速度用点线，便于对照
-        is_causal = key in ("ma_slope_smooth_causal", "ma_accel_smooth_causal")
-        is_smooth = key in ("ma_slope_smooth", "ma_accel_smooth") or is_causal
+        # 中心式平滑用实线加粗；因果平滑用虚线(实盘可见)；原始导数用点线，便于对照
+        is_causal = key in _CAUSAL_DERIV
+        is_smooth = key in _CENTER_SMOOTH_DERIV or is_causal
         line = dict(width=1.8 if is_smooth else 1.2, color=color,
                     dash="dash" if is_causal else ("solid" if is_smooth else "dot"))
         fig.add_trace(
@@ -667,7 +692,7 @@ def fig_kline(
         )
     if deriv_overlays:
         fig.update_yaxes(
-            title_text="斜率 / 加速度", row=1, col=1, secondary_y=True,
+            title_text="斜率 / 加速度 / 三阶导", row=1, col=1, secondary_y=True,
             showgrid=False, zeroline=True, zerolinewidth=1,
             zerolinecolor="rgba(148,163,184,0.6)",
             tickfont=dict(size=10, color="#94a3b8"),
@@ -694,6 +719,19 @@ def fig_kline(
         ),
         row=1, col=1,
     )
+    # 成交量叠在主图底部（按价格轴缩放），与 K 线同域 → 纵向虚线可覆盖量柱
+    # 注意：Bar 默认从 0 起画，必须设 base=y_lo，否则会铺满整个价格区
+    price_span = max(y_hi - y_lo, 1e-9)
+    vol_band = price_span * 0.18
+    vol = df["volume"].astype(float)
+    vmax = float(vol.max()) if len(vol) and float(vol.max()) > 0 else 1.0
+    vol_height = vol / vmax * vol_band
+    vol_colors = [UP if c >= o else DOWN for o, c in zip(df["open"], df["close"])]
+    fig.add_trace(
+        go.Bar(x=df.index, y=vol_height, base=y_lo, name="成交量",
+               marker_color=vol_colors, hoverinfo="skip"),
+        row=1, col=1,
+    )
     # 统一提示框固定显示在图表最顶部（在所有 K 线上方），配合 hovermode="x" 横向偏移不挡走势。
     top_anchor = float(high_env.max()) + pad * 1.6
     _add_unified_hover(fig, df, ind, col_overlays, (sm_m, sm_s),
@@ -705,31 +743,32 @@ def fig_kline(
     # 买入在 K 线正下方引出「B」色块、卖出在正上方引出「S」色块
     _add_trade_markers(fig, buys, side="buy", **marker_kw)
     _add_trade_markers(fig, sells, side="sell", **marker_kw)
-    vol_colors = [UP if c >= o else DOWN for o, c in zip(df["open"], df["close"])]
-    fig.add_trace(
-        go.Bar(x=df.index, y=df["volume"], name="成交量", marker_color=vol_colors),
-        row=2, col=1,
-    )
     for i, key in enumerate(panels):
-        _add_indicator_panel(fig, ind, key, row=3 + i, smooth=(sm_m, sm_s))
+        _add_indicator_panel(fig, ind, key, row=2 + i, smooth=(sm_m, sm_s))
     # 图例贴着图表顶部、向上排一行；主标题再抬到图例上方（标题 → 图例 → 图表）
     fig.update_layout(
-        height=620 + 150 * n_panels, xaxis_rangeslider_visible=False,
-        hovermode="x",  # 单一底部锚点提示，避免 x unified 大色块遮挡曲线
+        height=560 + 150 * n_panels, xaxis_rangeslider_visible=False,
+        hovermode="x",  # 单一顶部锚点提示；十字准线由 spikes 承担
+        spikedistance=-1,  # 悬停时始终画出十字虚线
+        hoverdistance=40,
+        bargap=0.15,
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
         margin=dict(t=80, b=16, l=8, r=8),
         hoverlabel=dict(align="left"),
     )
-    # 竖直参考线贯穿各子图，替代 x unified 的定位指引；
+    # 竖线 + 横线十字虚线：与 K 线/成交量同域，可完整覆盖量柱并做水平比价
     # rangebreaks 挖掉双休/节假日空隙，让 K 线与曲线紧凑连在一起
     fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor",
                      spikethickness=1, spikecolor="#94a3b8", spikedash="dot",
                      rangebreaks=_x_rangebreaks(df.index))
+    fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor",
+                     spikethickness=1, spikecolor="#94a3b8", spikedash="dot",
+                     row=1, col=1, secondary_y=False)
     # 主标题固定在图表顶部上方 46px（图例之上）；其余子图标题略微下移留白
     for ann in fig.layout.annotations:
         if ann.text == title:
             ann.update(y=1.0, yanchor="bottom", yshift=46)
-        elif ann.text in subplot_titles:
+        elif ann.text in subplot_titles and ann.text:
             ann.update(yshift=-4)
     return fig
 
@@ -1569,11 +1608,11 @@ with tab_bt:
                     "添加指标", indicator_options(),
                     default=["ma5", "ma_slope_smooth", "ma_accel_smooth"],
                     format_func=indicator_label, key="kline_indicators_v2",
-                    help="主图指标（均线/布林/斜率/加速度）叠加在 K 线上；副图指标（MACD/RSI/KDJ 等）单独成图。",
+                    help="主图指标（均线/布林/斜率/加速度/三阶导）叠加在 K 线上；副图指标（MACD/RSI/KDJ 等）单独成图。",
                 )
             overlays = [k for k in selected_inds if k in _OVERLAY_INDICATORS]
             panels = [k for k in selected_inds if k in _PANEL_INDICATORS]
-            sm1, sm2, sm3, sm4, sm5 = st.columns([2, 2, 1, 1, 1])
+            sm1, sm2, sm3, sm4, sm5, sm6 = st.columns([2, 2, 1, 1, 1, 1])
             with sm1:
                 smooth_method = st.selectbox(
                     "曲线平滑（滤波）", list(_SMOOTH_METHODS),
@@ -1588,9 +1627,9 @@ with tab_bt:
                 )
             with sm3:
                 deriv_k = st.number_input(
-                    "斜率/加速度 k日均线", min_value=1, max_value=120, value=5, step=1,
+                    "导数 k日均线", min_value=1, max_value=120, value=5, step=1,
                     key="kline_deriv_k",
-                    help="计算「MA斜率/加速度」及其平滑版所用的均线周期，默认 5。",
+                    help="计算「MA斜率/加速度/三阶导」及其平滑版所用的均线周期，默认 5。",
                 )
             with sm4:
                 slope_smooth_win = st.number_input(
@@ -1604,13 +1643,20 @@ with tab_bt:
                     key="kline_accel_sw2",
                     help="「MA加速度(平滑)」的保形(SavGol)滤波窗口，与斜率同方案，默认 11。",
                 )
+            with sm6:
+                jerk_smooth_win = st.number_input(
+                    "三阶导平滑窗口", min_value=3, max_value=61, value=11, step=2,
+                    key="kline_jerk_sw",
+                    help="「MA三阶导(平滑·因果)」的保形(SavGol)滤波窗口，与加速度同方案，默认 11。",
+                )
             st.plotly_chart(
                 fig_kline(df, signals, f"{label} K线 + 买卖点", label_mode=label_mode,
                           overlays=overlays, panels=panels,
                           smooth=(smooth_method, smooth_strength),
                           deriv_ma_window=int(deriv_k),
                           slope_smooth_window=int(slope_smooth_win),
-                          accel_smooth_window=int(accel_smooth_win)),
+                          accel_smooth_window=int(accel_smooth_win),
+                          jerk_smooth_window=int(jerk_smooth_win)),
                 use_container_width=True,
             )
             if log.empty:
